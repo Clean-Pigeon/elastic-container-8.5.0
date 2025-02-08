@@ -3,6 +3,15 @@ set -o pipefail
 
 ipvar="0.0.0.0"
 
+# These should be set in the .env file
+declare LinuxDR
+declare WindowsDR
+declare MacOSDR
+
+declare COMPOSE
+
+# Ignore following warning
+# shellcheck disable=SC1091
 . .env
 
 HEADERS=(
@@ -12,12 +21,26 @@ HEADERS=(
 )
 
 passphrase_reset() {
-  if grep -Fq "changeme" .env; 
-  then echo "Sorry, looks like you haven't updated the passphrase from the default";
-  echo "Please update the changeme passphrases in the .env file.";
-  exit 1;
-  else echo "Passphrase has been reset. Proceeding.";
+  if grep -Fq "changeme" .env; then
+    echo "Sorry, looks like you haven't updated the passphrase from the default"
+    echo "Please update the changeme passphrases in the .env file."
+    exit 1
+  else
+    echo "Passphrase has been reset. Proceeding."
   fi
+}
+
+check_required_apps() {
+    apps=("jq" "curl")
+
+    for app in "${apps[@]}"; do
+        if ! command -v "$app" &>/dev/null; then
+            echo "The application '$app' is not installed."
+            exit 1
+        fi
+    done
+
+    echo "All required applications are installed."
 }
 
 # Create the script usage menu
@@ -26,8 +49,8 @@ usage() {
   usage: ./elastic-container.sh [-v] (stage|start|stop|restart|status|help)
   actions:
     stage     downloads all necessary images to local storage
-    start     creates a container network and starts containers 
-    stop      stops running containers without removing them 
+    start     creates a container network and starts containers
+    stop      stops running containers without removing them
     destroy   stops and removes the containers, the network, and volumes created
     restart   restarts all the stack containers
     status    check the status of the stack containers
@@ -46,11 +69,11 @@ configure_kbn() {
   while [ $i -gt 0 ]; do
     STATUS=$(curl -I -k --silent "${LOCAL_KBN_URL}" | head -n 1 | cut -d ' ' -f2)
     echo
-    echo "Attempting to enable the Detection Engine and install prebuilt Detection Rules"
+    echo "Attempting to enable the Detection Engine and install prebuilt Detection Rules."
 
     if [ "${STATUS}" == "302" ]; then
       echo
-      echo "Kibana is up. Proceeding"
+      echo "Kibana is up. Proceeding."
       echo
       output=$(curl -k --silent "${HEADERS[@]}" --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPOST "${LOCAL_KBN_URL}/api/detection_engine/index")
       [[ ${output} =~ '"acknowledged":true' ]] || (
@@ -66,7 +89,7 @@ configure_kbn() {
       echo "Prepackaged rules installed!"
       echo
       if [[ "${LinuxDR}" -eq 0 && "${WindowsDR}" -eq 0 && "${MacOSDR}" -eq 0 ]]; then
-        echo "No detection rules enabled in the .env file, skipping detection rules enablement"
+        echo "No detection rules enabled in the .env file, skipping detection rules enablement."
         echo
         break
       else
@@ -74,35 +97,35 @@ configure_kbn() {
         if [ "${LinuxDR}" -eq 1 ]; then
 
           curl -k --silent "${HEADERS[@]}" --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -X POST "${LOCAL_KBN_URL}/api/detection_engine/rules/_bulk_action" -d'
-           {
-              "query": "alert.attributes.tags: \"Linux\"",
+            {
+              "query": "alert.attributes.tags: (\"Linux\" OR \"OS: Linux\")",
               "action": "enable"
             }
             ' 1>&2
-            echo 
-            echo "Successfully enabled Linux detection rules"
+          echo
+          echo "Successfully enabled Linux detection rules"
         fi
         if [ "${WindowsDR}" -eq 1 ]; then
 
           curl -k --silent "${HEADERS[@]}" --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -X POST "${LOCAL_KBN_URL}/api/detection_engine/rules/_bulk_action" -d'
             {
-              "query": "alert.attributes.tags: \"Windows\"",
+              "query": "alert.attributes.tags: (\"Windows\" OR \"OS: Windows\")",
               "action": "enable"
             }
             ' 1>&2
-            echo
-            echo "Successfully enabled Windows detection rules"
+          echo
+          echo "Successfully enabled Windows detection rules"
         fi
         if [ "${MacOSDR}" -eq 1 ]; then
 
           curl -k --silent "${HEADERS[@]}" --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -X POST "${LOCAL_KBN_URL}/api/detection_engine/rules/_bulk_action" -d'
             {
-              "query": "alert.attributes.tags: \"MacOS\"",
+              "query": "alert.attributes.tags: (\"macOS\" OR \"OS: macOS\")",
               "action": "enable"
             }
             ' 1>&2
-            echo
-            echo "Successfully enabled MacOS detection rules"
+          echo
+          echo "Successfully enabled MacOS detection rules"
         fi
       fi
       echo
@@ -112,40 +135,54 @@ configure_kbn() {
       echo "Kibana still loading. Trying again in 40 seconds"
     fi
 
-    sleep 40 
+    sleep 40
     i=$((i - 1))
   done
-  [ $i -eq 0 ] && echo "Exceeded MAXTRIES (${MAXTRIES}) to setup detection engine." && exit 1 
+  [ $i -eq 0 ] && echo "Exceeded MAXTRIES (${MAXTRIES}) to setup detection engine." && exit 1
   return 0
 }
 
 get_host_ip() {
   os=$(uname -s)
-  if [ ${os} == "Linux" ]; then
+  if [ "${os}" == "Linux" ]; then
     ipvar=$(hostname -I | awk '{ print $1}')
-  elif [ ${os} == "Darwin" ]; then
+  elif [ "${os}" == "Darwin" ]; then
     ipvar=$(ifconfig en0 | awk '$1 == "inet" {print $2}')
   fi
 }
 
 set_fleet_values() {
-  fingerprint=$(docker compose exec -w /usr/share/elasticsearch/config/certs/ca elasticsearch cat ca.crt | openssl x509 -noout -fingerprint -sha256 | cut -d "=" -f 2 | tr -d :)
-  printf '{"fleet_server_hosts": ["%s"]}' "https://${ipvar}:${FLEET_PORT}" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPUT "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/settings" -d @- | jq 
-  printf '{"hosts": ["%s"]}' "https://${ipvar}:9200" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPUT "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/outputs/fleet-default-output" -d @- | jq 
-  printf '{"ca_trusted_fingerprint": "%s"}' "${fingerprint}" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPUT "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/outputs/fleet-default-output" -d @- | jq 
-  printf '{"config_yaml": "%s"}' "ssl.verification_mode: certificate" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPUT "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/outputs/fleet-default-output" -d @- | jq 
+  # Get the current Fleet settings
+  CURRENT_SETTINGS=$(curl -k -s -u "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -X GET "${LOCAL_KBN_URL}/api/fleet/agents/setup" -H "Content-Type: application/json")
+
+  # Check if Fleet is already set up
+  if echo "$CURRENT_SETTINGS" | grep -q '"isInitialized": true'; then
+    echo "Fleet settings are already configured."
+    return
+  fi
+
+  echo "Fleet is not initialized, setting up Fleet..."
+  
+  fingerprint=$(${COMPOSE} exec -w /usr/share/elasticsearch/config/certs/ca elasticsearch cat ca.crt | openssl x509 -noout -fingerprint -sha256 | cut -d "=" -f 2 | tr -d :)
+  printf '{"fleet_server_hosts": ["%s"]}' "https://${ipvar}:${FLEET_PORT}" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPUT "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/settings" -d @- | jq
+  printf '{"hosts": ["%s"]}' "https://${ipvar}:9200" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPUT "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/outputs/fleet-default-output" -d @- | jq
+  printf '{"ca_trusted_fingerprint": "%s"}' "${fingerprint}" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPUT "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/outputs/fleet-default-output" -d @- | jq
+  printf '{"config_yaml": "%s"}' "ssl.verification_mode: certificate" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPUT "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/outputs/fleet-default-output" -d @- | jq
+  policy_id=$(printf '{"name": "%s", "description": "%s", "namespace": "%s", "monitoring_enabled": ["logs","metrics"], "inactivity_timeout": 1209600}' "Endpoint Policy" "" "default" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPOST "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/agent_policies?sys_monitoring=true" -d @- | jq -r '.item.id')
+  pkg_version=$(curl -k --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XGET "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/epm/packages/endpoint" -d : | jq -r '.item.version')
+  printf "{\"name\": \"%s\", \"description\": \"%s\", \"namespace\": \"%s\", \"policy_id\": \"%s\", \"enabled\": %s, \"inputs\": [{\"enabled\": true, \"streams\": [], \"type\": \"ENDPOINT_INTEGRATION_CONFIG\", \"config\": {\"_config\": {\"value\": {\"type\": \"endpoint\", \"endpointConfig\": {\"preset\": \"EDRComplete\"}}}}}], \"package\": {\"name\": \"endpoint\", \"title\": \"Elastic Defend\", \"version\": \"${pkg_version}\"}}" "Elastic Defend" "" "default" "${policy_id}" "true" | curl -k --silent --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -XPOST "${HEADERS[@]}" "${LOCAL_KBN_URL}/api/fleet/package_policies" -d @- | jq
 }
 
 clear_documents() {
-  if (( $(  curl -k --silent "${HEADERS[@]}" --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -X DELETE "https://${ipvar}:9200/_data_stream/logs-*" | grep -c "true" ) > 0 )) ; then
+  if (($(curl -k --silent "${HEADERS[@]}" --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -X DELETE "https://${ipvar}:9200/_data_stream/logs-*" | grep -c "true") > 0)); then
     printf "Successfully cleared logs data stream"
-  else 
+  else
     printf "Failed to clear logs data stream"
   fi
-  echo 
-  if (( $(  curl -k --silent "${HEADERS[@]}" --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -X DELETE "https://${ipvar}:9200/_data_stream/metrics-*" | grep -c "true" ) > 0 )) ; then
+  echo
+  if (($(curl -k --silent "${HEADERS[@]}" --user "${ELASTIC_USERNAME}:${ELASTIC_PASSWORD}" -X DELETE "https://${ipvar}:9200/_data_stream/metrics-*" | grep -c "true") > 0)); then
     printf "Successfully cleared metrics data stream"
-  else 
+  else
     printf "Failed to clear metrics data stream"
   fi
   echo
@@ -177,6 +214,15 @@ else
   exec 3<>/dev/null
 fi
 
+if docker compose >/dev/null; then
+  COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null; then
+  COMPOSE="docker-compose"
+else
+  echo "elastic-container requires docker compose!"
+  exit 2
+fi
+
 case "${ACTION}" in
 
 "stage")
@@ -189,20 +235,22 @@ case "${ACTION}" in
 "start")
   passphrase_reset
 
+  check_required_apps
+
   get_host_ip
 
-  echo "Starting Elastic Stack network and containers"
+  echo "Starting Elastic Stack network and containers."
 
-  docker compose up -d --no-deps
+  ${COMPOSE} up -d --no-deps 
 
   configure_kbn 1>&2 2>&3
 
-  echo "Waiting 40 seconds for Fleet Server setup"
+  echo "Waiting 40 seconds for Fleet Server setup."
   echo
 
   sleep 40
 
-  echo "Populating Fleet Settings"
+  echo "Populating Fleet Settings."
   set_fleet_values > /dev/null 2>&1
   echo
 
@@ -216,31 +264,30 @@ case "${ACTION}" in
 
 "stop")
   echo "Stopping running containers."
-  
-  docker compose stop
+
+  ${COMPOSE} stop 
   ;;
 
 "destroy")
   echo "#####"
   echo "Stopping and removing the containers, network, and volumes created."
   echo "#####"
-  docker compose down -v
+  ${COMPOSE} down -v
   ;;
 
 "restart")
   echo "#####"
   echo "Restarting all Elastic Stack components."
   echo "#####"
-  docker compose restart elasticsearch kibana fleet-server 2>&3
-  docker compose ps | grep -v setup
+  ${COMPOSE} restart elasticsearch kibana fleet-server
   ;;
 
 "status")
-  docker compose ps | grep -v setup
+  ${COMPOSE} ps | grep -v setup
   ;;
 
 "clear")
-  clear_documents 
+  clear_documents
   ;;
 
 "help")
