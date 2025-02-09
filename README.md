@@ -1,4 +1,4 @@
-# The Elastic Container Project
+# The Elastic Container Project for Stack 8.5.0
 
 Stand up a 100% containerized Elastic stack, TLS secured, with Elasticsearch, Kibana, Fleet, and the Detection Engine all pre-configured, enabled and ready to use, within minutes.
 
@@ -65,7 +65,7 @@ Arch Linux users should install `inetutils` and change the shell script from `ho
 
 ## Usage
 
-This uses default creds of `elastic:changeme` and is intended purely for security research on a local Elastic stack. [Change the password in the `.env` file](https://github.com/peasead/elastic-container/blob/main/README.md#modifying).
+This uses default creds of `elastic:changeme` and is intended purely for security research on a local Elastic stack. [Change the password in the `.env` file](https://github.com/peasead/elastic-container-8.5.0/blob/main/README.md#modifying).
 
 This should not be Internet exposed or used in a production environment.
 
@@ -75,11 +75,11 @@ If you want to bulk enable Elastic's pre-built detection rules by OS, on startup
 
 ```
 # Bulk Enable Detection Rules by OS
-LinuxDR=0
+LinuxDR=1
 
 WindowsDR=1
 
-MacOSDR=0
+MacOSDR=1
 ```
 
 ### Starting
@@ -210,7 +210,7 @@ In `.env`, the variables are defined, any can be changed. **You must change the 
 ```
 ELASTIC_PASSWORD="changeme"
 KIBANA_PASSWORD="changeme"
-STACK_VERSION="8.6.0"
+STACK_VERSION="8.5.0"
 ```
 
 If you want to change the default values, simply replace whatever is appropriate in the variable declaration.
